@@ -25,6 +25,9 @@ from itertools import count
 8. update q_value with rewards
 
 ''' 
+
+'''
+input dimension = 1*77/ 1*44인 코드
 class SelectDiceCombDQN(nn.Module):
 
     def __init__(self, input_dim, output_dim):
@@ -64,26 +67,42 @@ class SelectAdditionalActionDQN(nn.Module):
     
 
 '''
-ReplayMemory
+#input dim을 2차원으로 바꿈 -> 7*11, 4*11로 변환
 
-탐색한 데이터 저장 후 재사용
-'''
+class SelectDiceCombDQN(nn.Module):
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
-class ReplayMemory(object):
+    def __init__(self, input_channels = 1, input_height = 7, input_width = 11, output_dim = 10):
+        super(SelectDiceCombDQN, self).__init__()
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=5, stride=1, padding=2)
+        self.dropout1 = nn.Dropout(p=0.2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        self.dropout2 = nn.Dropout(p=0.2)
+        self.fc1 = nn.Linear(64 * input_height * input_width, 512)
+        self.head = nn.Linear(512, output_dim)
 
-    def __init__(self, capacity):
-        self.memory = deque([], maxlen=capacity)
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        return self.head(x)
 
-    def push(self, *args):
-        """transition 저장"""
-        self.memory.append(Transition(*args))
+class SelectAdditionalActionDQN(nn.Module):
+    def __init__(self, input_channels = 1, input_height = 7, input_width = 11, output_dim = 3):
+        super(SelectAdditionalActionDQN, self).__init__()
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=5, stride=1, padding=2)
+        self.dropout1 = nn.Dropout(p=0.2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        self.dropout2 = nn.Dropout(p=0.2)
+        self.fc1 = nn.Linear(64 * input_height * input_width, 512)
+        self.head = nn.Linear(512, output_dim)
 
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        return self.head(x)
     
 '''
 334
