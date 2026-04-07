@@ -107,8 +107,8 @@ class Cantstop:
             self.flags = []
             self.player_progress[f"player{self.player}"] = copy.deepcopy(self.turn_player_progress)
             for index in range(len(self.turn_player_progress)):
-                if self.turn_player_progress[index-2] == self.mapsize[index-2]:
-                    self.conquered_flag[index-2] = self.player
+                if self.turn_player_progress[index] == self.mapsize[index]:
+                    self.conquered_flag[index] = self.player
             
             result = self.check_winpoint()
             if result != -1:
@@ -290,6 +290,7 @@ class Cantstop:
         self.player = random.randint(1, self.players)
         self.turn_player_progress = copy.deepcopy(self.player_progress[f"player{self.player}"])
         self.conquered_flag = np.zeros_like(self.mapsize)
+        self.already_conquered_point = np.zeros_like(self.mapsize)
         self.cumulative_rewards_dice = 0
         self.cumulative_rewards_action = 0
 
@@ -657,22 +658,22 @@ class Cantstop:
 
     
     def check_missed_points(self, type): # 이번 턴에 놓친 점수를 계산한 뒤, conquered - current_score -> 손실 점수의 크기
-        #type -1 => boomed situation, 1 => normal situation        
+        #type -1 => boomed situation, 1 => normal situation
         conquered_count = 0
         current_score = 0
         for index in range(len(self.turn_player_progress)):
- 
-            if self.turn_player_progress[index-2] == self.mapsize[index-2]:
+
+            if self.turn_player_progress[index] == self.mapsize[index]:
                 if type == 1:#게임 진행중엔 conquered_count를 1번씩만 리턴 -> 그래야 끝점 도달시에만 점수
-                    if self.already_conquered_point[index-2] == 0:
+                    if self.already_conquered_point[index] == 0:
                         conquered_count += 1
-                        self.already_conquered_point[index-2] = 1
+                        self.already_conquered_point[index] = 1
                 else: #type is -1
                     #터졌을 땐 손실점수 확인 목적이니 conquered_count 종합해서 반환
                     conquered_count += 1
 
-        for i in self.player_progress[f"player{self.player}"]:
-            if i == self.mapsize[index - 2]:
+        for idx, val in enumerate(self.player_progress[f"player{self.player}"]):
+            if val == self.mapsize[idx]:
                 current_score += 1
         #게임이 끝날 상황인지 확인 + 해당 행동(진행중) / 해당 턴(터짐)의 획득 점수 확인
         if conquered_count >= 3:
@@ -686,8 +687,8 @@ class Cantstop:
         self.player_progress[f"player{self.player}"] = copy.deepcopy(self.turn_player_progress)
         conquered_count = 0
         for index in range(len(self.turn_player_progress)):
-            if self.turn_player_progress[index-2] == self.mapsize[index-2]:
-                self.conquered_flag[index-2] = self.player
+            if self.turn_player_progress[index] == self.mapsize[index]:
+                self.conquered_flag[index] = self.player
                 conquered_count += 1
         if n == 1:
             state_for_replay = self.Learn_getState(1)
@@ -823,7 +824,7 @@ class Cantstop:
                 checkflags.append(idx+2)
 
         #flags의 원소 오류
-        if not self.are_lists_equal(checkflags, checkflags):
+        if not self.are_lists_equal(checkflags, self.flags):
             print("ERROR : flags are not equal")
             print(f"checkflags : {checkflags}")
             print(f"self.flags : {self.flags}")

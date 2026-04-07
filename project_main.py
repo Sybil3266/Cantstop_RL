@@ -111,10 +111,8 @@ def learn(use_schedule = False, min_lr = 1e-6):
 
             get_rewards_dice -= 0.3
             rewards_dice += get_rewards_dice
-            if result == -1:
-                replay_memory_dice.add(dicecomb_input_mat, action, get_rewards_dice, updated_state_dice, -1)
-            else:
-                replay_memory_dice.add(dicecomb_input_mat, action, get_rewards_dice, updated_state_dice, 1)
+            done_flag_dice = 0 if result == -1 else 1
+            replay_memory_dice.add(dicecomb_input_mat, action, get_rewards_dice, updated_state_dice, done_flag_dice)
             selectaction_input_mat = game.Learn_getState(2)
 
             if action != 9:
@@ -132,9 +130,10 @@ def learn(use_schedule = False, min_lr = 1e-6):
             policy_selectAction.train()
 
             game_result, get_rewards_action, updated_state_action = game.update_state_action(action)
-            #get_rewards_action -= 1 #action에 대해서는 
+            #get_rewards_action -= 1 #action에 대해서는
             rewards_action += get_rewards_action
-            replay_memory_action.add(selectaction_input_mat, action, get_rewards_action, updated_state_action, game_result)
+            done_flag_action = 0 if game_result == -1 else 1
+            replay_memory_action.add(selectaction_input_mat, action, get_rewards_action, updated_state_action, done_flag_action)
 
             isError, isFinished = game.check_error()
 
@@ -392,36 +391,32 @@ def select_action(action_matrix, action_masking, cur_episode, dice_or_action, po
             valid_actions = []
 
         for i in range(len(action_matrix)):
-            valid_actions.append(dice_action[0][i] * action_masking[i])#불가능한 행동은 전부 q값에 0을 곱해 처리
+            if action_masking[i]:
+                valid_actions.append(dice_action[0][i])
+            else:
+                valid_actions.append(torch.tensor(float('-inf'), device=device))
 
-        valid_actions_tensor = torch.tensor(valid_actions, device=device)
-    
+        valid_actions_tensor = torch.stack(valid_actions)
+
     if sample > eps_threshold:#Greedy
         if dice_or_action == 1:#주사위 조합 선택
             # 가능한 행동 중 최대 Q값을 가진 행동 찾기
-            valid_action_indices = torch.nonzero(valid_actions_tensor, as_tuple=True)[0]
-            if len(valid_action_indices) > 0:
-
-                max_q_value_index = valid_actions_tensor[valid_action_indices].max(0)[1]
-
-                action = valid_action_indices[max_q_value_index].item()
-
-            else:
-                indices_of_ones = [i for i, value in enumerate(valid_actions_tensor) if value != 0]
-                action = random.choice(indices_of_ones)  # 가능한 행동이 없는 경우 일단 무작위로 처리, 탐험 하면서 값은 갱신되고, 초기에 0으로 초기화될 가능성 생각
+            action = valid_actions_tensor.argmax().item()
         else:#행동 선택
             with torch.no_grad():
-                q_values = policy(state_to_cuda)
-                action = q_values.max(1)[1].item()  # 가장 높은 Q 값을 가지는 행동의 인덱스
+                q_values = policy(state_to_cuda).squeeze()
+                for i in range(len(action_masking)):
+                    if action_masking[i] == 0:
+                        q_values[i] = float('-inf')
+                action = q_values.argmax().item()
         return torch.tensor(action)
     else:#무작위 행동
         if dice_or_action == 1:#주사위 조합 선택
-            indices_of_ones = [i for i, value in enumerate(valid_actions_tensor) if value != 0]
-            action = None
-            while action == None:
-                action =  random.choice(indices_of_ones)
+            indices_of_ones = [i for i, value in enumerate(valid_actions_tensor) if value != float('-inf')]
+            action = random.choice(indices_of_ones)
         else:#행동 선택
-            action = random.choice([0,1])
+            valid_indices = [i for i in range(len(action_masking)) if action_masking[i] == 1]
+            action = random.choice(valid_indices)
 
         return torch.tensor(action)
     
