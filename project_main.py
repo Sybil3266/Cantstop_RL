@@ -109,7 +109,6 @@ def learn(use_schedule = False, min_lr = 1e-6):
             else:
                 result, get_rewards_dice, updated_state_dice = game.update_state_dice(action, ())
 
-            get_rewards_dice -= 0.3
             rewards_dice += get_rewards_dice
             done_flag_dice = 0 if result == -1 else 1
             replay_memory_dice.add(dicecomb_input_mat, action, get_rewards_dice, updated_state_dice, done_flag_dice)

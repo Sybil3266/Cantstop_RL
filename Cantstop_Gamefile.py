@@ -527,15 +527,15 @@ class Cantstop:
         rewards = 0
         #print(f"action_index : {action_index} action : {action}. actiontype : {type(action)}")
         if action_index == 9:#state with no possible action
-            #calculate_rewards
-            rewards -= self.cumulative_rewards_dice * 1.1
+            #calculate_rewards - 고정 패널티로 변경
+            rewards -= 5
             self.cumulative_rewards_dice = 0
 
             result, conquered_count = self.check_missed_points(-1)
             if result == 1:
-                rewards -= 200
+                rewards -= 10
             if conquered_count != 0:
-                rewards -= 20 * conquered_count
+                rewards -= 3 * conquered_count
 
             return -1, rewards, self.Learn_getState(1)
         else:
@@ -607,9 +607,9 @@ class Cantstop:
 
             result, conquered_count = self.check_missed_points(1)
             if result == 1:
-                rewards += 200
+                rewards += 20
             if conquered_count != 0:
-                rewards += 30 * conquered_count
+                rewards += 5 * conquered_count
             #print(f"result : {result}, conquered count : {conquered_count}, total rewards : {rewards}")
             self.cumulative_rewards_dice += rewards
             return result, rewards, self.Learn_getState(1)
@@ -618,15 +618,15 @@ class Cantstop:
     def update_state_action(self, action):
         rewards = 0
         if action == 2:#state with no possible action
-            #calculate rewards
-            rewards -= self.cumulative_rewards_action * 1.1
+            #calculate rewards - 고정 패널티로 변경
+            rewards -= 10
             self.cumulative_rewards_action = 0
             result, conquered_count = self.check_missed_points(-1)
-            
+
             if result == 1:
-                rewards -= 5000
+                rewards -= 15
             if conquered_count != 0:
-                rewards -= 300 * conquered_count
+                rewards -= 5 * conquered_count
             self.turn_player_progress = copy.deepcopy(self.player_progress[f"player{self.player}"])
             #print(f"curpl //boom : {self.player}")
             result, conquered_count, state_for_update = self.change_turn(2)
@@ -634,14 +634,22 @@ class Cantstop:
             return -1, rewards, state_for_update
         else:
             if action == 0: #play more dice
+                # 이번 턴에서 새로 진행한 만큼만 보상 (저장된 progress와의 차이)
+                saved_progress = self.player_progress[f"player{self.player}"]
                 for idx, val in enumerate(self.turn_player_progress):
-                    rewards += self.col_rewards[idx] * val
+                    diff = val - saved_progress[idx]
+                    if diff > 0:
+                        rewards += self.col_rewards[idx] * diff
                 self.cumulative_rewards_action += rewards
                 state_for_update = self.Learn_getState(2)
-                #rewards = 0
                 return -1, rewards, state_for_update
             else: #stop and save this state
-                rewards += self.cumulative_rewards_action
+                # 멈추면 이번 턴 진척도를 보상으로 확정
+                saved_progress = self.player_progress[f"player{self.player}"]
+                for idx, val in enumerate(self.turn_player_progress):
+                    diff = val - saved_progress[idx]
+                    if diff > 0:
+                        rewards += self.col_rewards[idx] * diff
                 self.cumulative_rewards_action = 0
                 #print(f"curpl : {self.player}")
 
@@ -649,10 +657,10 @@ class Cantstop:
                 #print(f"after changeturn : {self.player}")
 
                 if result == 1:
-                    rewards += 200
+                    rewards += 20
                     self.game_finished = True
                 if conquered_count != 0:
-                    rewards += 30
+                    rewards += 5
 
                 return result, rewards, state_for_update
 
