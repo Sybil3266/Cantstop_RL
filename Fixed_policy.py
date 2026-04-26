@@ -223,8 +223,10 @@ def policy_Hold_At_Three_Flags_dice(action_matrix, action_masking, flags):
     
     
     max_indices = [index for index, (value_ccinf, value_minincr) in enumerate(zip(check_camps_in_flags, increase_camps_flags)) if value_ccinf == max_camps and value_minincr == min_increases and index in valid_actions_idx]
-    # 무작위 선택
-    selected_action = random.choice(max_indices) if max_indices else 0
+    # max_indices가 비면 조건 완화: valid action 중 아무거나 선택
+    if not max_indices:
+        max_indices = [idx for idx in valid_actions_idx if idx is not None]
+    selected_action = random.choice(max_indices)
     return selected_action, action_matrix[selected_action]
 
 
@@ -270,32 +272,24 @@ def policy_Hold_At_Three_Flags_action_v2(flags, is_boom, player_progress, turn_p
 #####################################################
 
 def policy_Score_Or_Bust_dice(action_matrix, action_masking, flags, turn_player_progress):
-    valid_actions = []
-
     if action_masking[9] == 1:
-        return 9
-    
-    for action in action_matrix:
-        valid_actions.append(action if action_masking[action_matrix.index(action)] != 0 else None)
+        return 9, None
 
     check_scores = []
     mapsize = np.array([3,5,7,9,11,13,11,9,7,5,3])
-    for action in valid_actions:
+    for idx, action in enumerate(action_matrix):
         score = 0
-        if action is None:
-            check_scores.append(score)
-        else:
+        if action is not None and action_masking[idx] != 0:
             for act in action:
                 if turn_player_progress[act-2] + 1 == mapsize[act - 2]:
                     score += 1
-    
         check_scores.append(score)
 
     max_score_action = max(check_scores)
-    max_indices = [index for index, value in enumerate(check_scores) if value == max_score_action]
-    
+    max_indices = [idx for idx, value in enumerate(check_scores) if value == max_score_action and action_masking[idx] != 0]
+
     selected_action = random.choice(max_indices) if max_indices else 0
-    return selected_action
+    return selected_action, action_matrix[selected_action]
 
 def policy_Score_Or_Bust_action(is_boom, player_progress, turn_player_progress, flags):
     if is_boom == True:

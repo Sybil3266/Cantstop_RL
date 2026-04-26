@@ -7,11 +7,25 @@ import copy
 import torch
 
 class Cantstop:
+    DICE_BOOM_PENALTY = 2  # 클래스 변수: 외부에서 설정 가능
+    FLAG_EXISTING_BONUS = 0.05  # 기존 flag 열 진행 보너스
+    FLAG_NEW_PENALTY = 0.1     # 3번째 flag 사용 패널티
+    # Continue safety bonus: flag 수가 적을 때 action=0(continue) 선택에 가산
+    # 현재 "무조건 stop" 편향을 완화하기 위한 구조적 신호
+    # 관측된 Q(stop) - Q(continue) 갭 0.7~1.4 를 상쇄하도록 대폭 상향 (C-tune3).
+    # 이전 0.5/0.3/0.5 수준에선 bootstrap V_gap(~5) × γ(0.5) = 2.5 에 밀렸음.
+    # 1.5 로 올려서 갭 + 안전마진 확보. 마스킹으로 행동이 강제되는 flag 0/1 도
+    # 같은 레벨로 맞춰 Q 값/bootstrap signal 을 일관되게.
+    CONTINUE_SAFETY_BONUS_0 = 1.5  # flag 0개 (boom 확률 0%)
+    CONTINUE_SAFETY_BONUS_1 = 1.5  # flag 1개 (boom 확률 매우 낮음)
+    CONTINUE_SAFETY_BONUS_2 = 1.5  # flag 2개 — 실제 결정점, 갭 상쇄 핵심
+    # flag 3개일 땐 safety bonus 없음 (0) — 명시적 위험 구간 신호
+
     def __init__ (self, players = 2, starting = None):
         self.ams = []
         self.amx = []
         self.ccf = []
-        self.players = players 
+        self.players = players
         self.score = np.zeros(self.players)
         self.mapsize = np.array([3,5,7,9,11,13,11,9,7,5,3])
         #self.mapsize = np.array([3,3,3,3,4,5,4,3,3,3,3]) #테스트용 작은 크기 map
@@ -298,6 +312,8 @@ class Cantstop:
     def Learn_dice(self):
         #return dice combinations
         dices, dice_sum_comb = self.dice()
+        self.dices = dices
+        self.dice_sum_comb = dice_sum_comb
         action_matrix = []
         double_mark = []
         map_combinations = [-1] * 11
@@ -527,8 +543,8 @@ class Cantstop:
         rewards = 0
         #print(f"action_index : {action_index} action : {action}. actiontype : {type(action)}")
         if action_index == 9:#state with no possible action
-            #calculate_rewards - 고정 패널티로 변경
-            rewards -= 5
+            # boom 패널티 제거: dice 네트워크는 boom을 통제할 수 없으므로
+            # 고정 패널티는 노이즈만 추가함. action 네트워크가 risk 관리 담당.
             self.cumulative_rewards_dice = 0
 
             result, conquered_count = self.check_missed_points(-1)
@@ -584,11 +600,16 @@ class Cantstop:
             '''
             for i in action:
                 if i not in self.flags:
+                    # 새 flag 사용 - 3번째 flag는 boom 위험 급증
+                    if len(self.flags) >= 2:
+                        rewards -= self.FLAG_NEW_PENALTY
                     self.flags.append(i)
-                    #print(f"append flags : {i}")
+                else:
+                    # 기존 flag 열 진행 - 효율적 선택 보너스
+                    rewards += self.FLAG_EXISTING_BONUS
                 if self.turn_player_progress[i - 2] + 1 <= self.mapsize[i - 2]:  # 추가된 조건
                     self.turn_player_progress[i - 2] += 1
-                    rewards += self.col_rewards[i-2]                       
+                    rewards += self.col_rewards[i-2]
  
             #이유는 모르겠는데 action_masking은 정상 작동하는데 action_index가 9로 처리되지 않는 경우
             for idx, val in enumerate(self.turn_player_progress):
@@ -607,26 +628,37 @@ class Cantstop:
 
             result, conquered_count = self.check_missed_points(1)
             if result == 1:
-                rewards += 20
+                rewards += 10
             if conquered_count != 0:
-                rewards += 5 * conquered_count
+                rewards += 3 * conquered_count
             #print(f"result : {result}, conquered count : {conquered_count}, total rewards : {rewards}")
             self.cumulative_rewards_dice += rewards
             return result, rewards, self.Learn_getState(1)
     
+    def _calc_turn_progress(self):
+        saved_progress = self.player_progress[f"player{self.player}"]
+        value = 0
+        for idx, val in enumerate(self.turn_player_progress):
+            diff = val - saved_progress[idx]
+            if diff > 0:
+                value += self.col_rewards[idx] * diff
+        return value
+
     #action반영
-    def update_state_action(self, action):
+    def update_state_action(self, action, last_dice_reward=0):
         rewards = 0
         if action == 2:#state with no possible action
-            #calculate rewards - 고정 패널티로 변경
-            rewards -= 10
+            # 🅱: boom 패널티 1.1 → 1.0 (stop에서 turn_progress를 통째로 realize하지
+            #      않으므로 대칭성을 맞추기 위해 완화)
+            turn_progress_value = self._calc_turn_progress()
+            rewards -= turn_progress_value * 1.0
             self.cumulative_rewards_action = 0
             result, conquered_count = self.check_missed_points(-1)
 
             if result == 1:
-                rewards -= 15
+                rewards -= 10
             if conquered_count != 0:
-                rewards -= 5 * conquered_count
+                rewards -= 3 * conquered_count
             self.turn_player_progress = copy.deepcopy(self.player_progress[f"player{self.player}"])
             #print(f"curpl //boom : {self.player}")
             result, conquered_count, state_for_update = self.change_turn(2)
@@ -634,22 +666,40 @@ class Cantstop:
             return -1, rewards, state_for_update
         else:
             if action == 0: #play more dice
-                # 이번 턴에서 새로 진행한 만큼만 보상 (저장된 progress와의 차이)
-                saved_progress = self.player_progress[f"player{self.player}"]
-                for idx, val in enumerate(self.turn_player_progress):
-                    diff = val - saved_progress[idx]
-                    if diff > 0:
-                        rewards += self.col_rewards[idx] * diff
+                # 직전 dice에서 얻은 보상만 (marginal reward)
+                rewards = last_dice_reward
+                # Safety bonus: 현재 flag 수가 적을수록 continue 장려
+                # (flag 0~1개면 boom 확률 0%, 2개면 아주 낮음)
+                flags_count = len(self.flags)
+                if flags_count == 0:
+                    rewards += self.CONTINUE_SAFETY_BONUS_0
+                elif flags_count == 1:
+                    rewards += self.CONTINUE_SAFETY_BONUS_1
+                elif flags_count == 2:
+                    rewards += self.CONTINUE_SAFETY_BONUS_2
+                # flag == 3 일 땐 bonus 없음 (실제로 위험 구간)
                 self.cumulative_rewards_action += rewards
                 state_for_update = self.Learn_getState(2)
                 return -1, rewards, state_for_update
             else: #stop and save this state
-                # 멈추면 이번 턴 진척도를 보상으로 확정
-                saved_progress = self.player_progress[f"player{self.player}"]
-                for idx, val in enumerate(self.turn_player_progress):
-                    diff = val - saved_progress[idx]
-                    if diff > 0:
-                        rewards += self.col_rewards[idx] * diff
+                # 🅱: stop 시 turn_progress 즉시 realize 제거
+                #  - 기존엔 action=1 이 _calc_turn_progress() 를 통째로 즉시 보상으로
+                #    받아서 "1번 굴리고 바로 stop" 이 최적이 되는 구조적 편향이 있었음
+                #  - 이제 stop의 고유 보상은 "정복 / 승리" 만 남김
+                #  - dice progress는 choose_dice 단계에서 이미 보상으로 반영되므로
+                #    여기서 또 realize하면 double counting에 가까움
+                rewards = 0
+                # 🅲-tune2: 의미없는 stop 페널티를 flag 수에 비례
+                #  - 고정 임계값 1.0 → 1.0 * flags_count 로 스케일
+                #  - 논리: flag를 N개 썼으면 N개 컬럼 모두 의미있게 전진시켜야 함.
+                #    flag=2 인데 progress 1.5 로 stop → 페널티 (플래그 하나는 놀린 셈)
+                #    flag=3 인데 progress 2.0 로 stop → 페널티
+                #  - flag=2 stop을 기존보다 더 넓은 범위에서 억제 → continue 상대우위 ↑
+                turn_progress_value = self._calc_turn_progress()
+                flags_count = len(self.flags)
+                required_progress = 1.0 * flags_count
+                if turn_progress_value < required_progress:
+                    rewards -= 1.0
                 self.cumulative_rewards_action = 0
                 #print(f"curpl : {self.player}")
 
@@ -657,10 +707,11 @@ class Cantstop:
                 #print(f"after changeturn : {self.player}")
 
                 if result == 1:
-                    rewards += 20
+                    rewards += 10
                     self.game_finished = True
                 if conquered_count != 0:
-                    rewards += 5
+                    # 🅱: conquered_count 비례 보너스로 변경 (기존 +3 고정 → +3*count)
+                    rewards += 3 * conquered_count
 
                 return result, rewards, state_for_update
 
@@ -698,14 +749,23 @@ class Cantstop:
             if self.turn_player_progress[index] == self.mapsize[index]:
                 self.conquered_flag[index] = self.player
                 conquered_count += 1
+
+        result = self.check_winpoint() #If there is a winner, it returns player's number
+
+        # 🔧 BUG FIX: state 추출을 player 전환 **이후에** 수행
+        #   기존: state 추출 → player 전환 순서였음
+        #        → stop/boom의 next_state가 "방금 턴 끝낸 player 시점"으로 저장
+        #        → Learn_getState가 current player 기준이라 "내가 progress 확보한 유리한
+        #           상태"로 인코딩 → bootstrap V(next) 과대평가 → Q(stop) 뻥튀기
+        #   수정: player 전환 후 state 추출 → "상대 시점의 턴 시작" state
+        #        → self-play에서 continue 경로와 perspective 일관성 확보
+        self.player = self.player + 1 if self.player != self.players else 1
+        self.turn_player_progress = copy.deepcopy(self.player_progress[f"player{self.player}"])
+
         if n == 1:
             state_for_replay = self.Learn_getState(1)
         else:
             state_for_replay = self.Learn_getState(2)
-            
-        result = self.check_winpoint() #If there is a winner, it returns player's number
-        self.player = self.player + 1 if self.player != self.players else 1
-        self.turn_player_progress = copy.deepcopy(self.player_progress[f"player{self.player}"])
 
         return result, conquered_count, state_for_replay
     

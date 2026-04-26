@@ -15,7 +15,7 @@ from itertools import count
 '''
 전체적인 학습 과정
 
-1. init -> DQNClass.__init__()  
+1. init -> DQNClass.__init__()
 2. state detection -> Gamefile will give data to model
 3. DQN input -> return all action's q_value
 4. Action Masking -> use one-hot encoding for check active actions
@@ -24,101 +24,70 @@ from itertools import count
 7. save data in Replay Memory -> make learning more efficient by reusing memory
 8. update q_value with rewards
 
-''' 
+---------------------------------------------------------------------------
+Channel-separated version (Conv1d)
 
+기존 구조:
+    input: (batch, 1, H, 11)        -- 7개(혹은 4개) semantic row가
+                                       한 채널 안에 섞여서 2D CNN으로 처리됨
+    conv2d kernel 5x5 가 row-axis 를 가로지르면서 의미가 다른 행끼리 섞임
+
+변경 구조:
+    input: (batch, C, 11)           -- 각 semantic row 를 독립 채널로 분리
+        dice  -> C = 7 (player/opponent/turn progress, conquered, 3 possible dice row)
+        action-> C = 4 (player/opponent/turn progress, conquered)
+    Conv1d 가 "column 축" 으로만 convolve -> 열(기둥) 간의 지역 관계만 학습하고,
+    채널 간 정보는 filter weight 로 선형 결합 됨. 행이 섞이지 않으므로
+    "이 숫자가 어떤 의미의 값인지" 를 모델이 구조적으로 인식할 수 있다.
+---------------------------------------------------------------------------
 '''
-input dimension = 1*77/ 1*44인 코드
-class SelectDiceCombDQN(nn.Module):
 
-    def __init__(self, input_dim, output_dim):
-        super(SelectDiceCombDQN, self).__init__()
-        self.input_dim = input_dim
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.dropout1 = nn.Dropout(p=0.2)
-        self.fc2 = nn.Linear(128, 64)
-        self.dropout2 = nn.Dropout(p=0.2)
-        self.fc3 = nn.Linear(64, output_dim)
-
-    def forward(self, x):
-        x = x.view(-1, self.input_dim)
-        x = F.relu(self.fc1(x))
-        x = self.dropout1(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout2(x)
-        return self.fc3(x)
-
-class SelectAdditionalActionDQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(SelectAdditionalActionDQN, self).__init__()
-        self.input_dim = input_dim
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.dropout1 = nn.Dropout(p=0.2)
-        self.fc2 = nn.Linear(128, 64)
-        self.dropout2 = nn.Dropout(p=0.2)
-        self.fc3 = nn.Linear(64, output_dim)
-
-    def forward(self, x):
-        x = x.view(-1, self.input_dim)
-        x = F.relu(self.fc1(x))
-        x = self.dropout1(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout2(x)
-        return self.fc3(x)
-    
-
-'''
-#input dim을 2차원으로 바꿈 -> 7*11, 4*11로 변환
 
 class SelectDiceCombDQN(nn.Module):
+    """Dice combination Q-network. Input: (batch, input_channels=7, input_width=11)."""
 
-    def __init__(self, input_channels = 1, input_height = 7, input_width = 11, output_dim = 10):
+    def __init__(self, input_channels=7, input_width=11, output_dim=10):
         super(SelectDiceCombDQN, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=5, stride=1, padding=2)
-        self.dropout1 = nn.Dropout(p=0.2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
-        self.dropout2 = nn.Dropout(p=0.2)
-        self.fc1 = nn.Linear(64 * input_height * input_width, 512)
+        self.input_channels = input_channels
+        self.input_width = input_width
+
+        self.conv1 = nn.Conv1d(input_channels, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+        self.dropout = nn.Dropout(p=0.2)
+        self.fc1 = nn.Linear(128 * input_width, 512)
         self.head = nn.Linear(512, output_dim)
 
     def forward(self, x):
+        # x: (batch, input_channels, input_width)
+        # 뒤쪽 호환: (batch, 1, C, W) 형태로 오면 squeeze
+        if x.dim() == 4 and x.size(1) == 1:
+            x = x.squeeze(1)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
+        x = x.reshape(x.size(0), -1)
+        x = self.dropout(F.relu(self.fc1(x)))
         return self.head(x)
+
 
 class SelectAdditionalActionDQN(nn.Module):
-    def __init__(self, input_channels = 1, input_height = 7, input_width = 11, output_dim = 3):
+    """Turn-action Q-network. Input: (batch, input_channels=4, input_width=11)."""
+
+    def __init__(self, input_channels=4, input_width=11, output_dim=3):
         super(SelectAdditionalActionDQN, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=5, stride=1, padding=2)
-        self.dropout1 = nn.Dropout(p=0.2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
-        self.dropout2 = nn.Dropout(p=0.2)
-        self.fc1 = nn.Linear(64 * input_height * input_width, 512)
-        self.head = nn.Linear(512, output_dim)
+        self.input_channels = input_channels
+        self.input_width = input_width
+
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+        self.dropout = nn.Dropout(p=0.2)
+        self.fc1 = nn.Linear(64 * input_width, 256)
+        self.head = nn.Linear(256, output_dim)
 
     def forward(self, x):
+        if x.dim() == 4 and x.size(1) == 1:
+            x = x.squeeze(1)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
+        x = x.reshape(x.size(0), -1)
+        x = self.dropout(F.relu(self.fc1(x)))
         return self.head(x)
-    
-'''
-334
-351
-input으로 이용되는 변수 수정
-while로 게임이 진행되는 과정을 외부로 빼내고 수정해야함
-그렇다면 어떻게 바꿔야하지
-
-기존 코드일 경우 게임 종료까지 while -> self.game_finished return해서 값 확인으로 변경
-주사위 조합을 return하고, 이를 return해주어야 state 전달이 가능
-진행 후 상태를 actionDQN에 입력해야 추가/중지에 대한 가치가 나옴
-이후 턴이 넘어가고 game_finished에 대한 check 진행
-
-분리할 구간을 정하자
-
-초기화 / 주사위를 던지고 결과를 return한다 / 조합을 선택한 후 상태를 저장하고 바로 actionDQN에 넘긴다 / 종료 상태를 확인하고 보상을 정산한다.
-다시 주사위를 던지고 결과를 return한다
-서로 학습하는 경우에 대해 어떻게 차이를 둘지만 확인을 해보자
-'''
